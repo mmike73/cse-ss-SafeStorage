@@ -114,5 +114,77 @@ TEST_CLASS(UserActivityTest)
         status = SafeStorageHandleLogout();
         Assert::IsTrue(NT_SUCCESS(status));
     };
+
+    TEST_METHOD(InitCreatesRequiredResources)
+    {
+        Assert::IsTrue(std::filesystem::is_directory(".\\users"));
+        Assert::IsTrue(std::filesystem::is_regular_file(".\\users.txt"));
+    };
+
+    TEST_METHOD(ValidationRejectsMaliciousInput)
+    {
+        char out[MAX_PATH];
+        char badDevicePath[] = "\\\\?\\C:\\x";
+        char badDriveRelative[] = "C:x";
+        char badAds[] = "a:b";
+        char badTrailingDot[] = ".\\users.txt.";
+
+        // Usernames: 5-10 ASCII letters only.
+        Assert::IsTrue(NT_SUCCESS(SsValidateUsername("UserA", 5)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateUsername("Al", 2)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateUsername("Alice1", 6)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateUsername("Ali ce", 6)));
+
+        // Passwords: length 5-128, one of each class, strict allow-list.
+        Assert::IsTrue(NT_SUCCESS(SsValidatePassword("PassWord1@", 10)));
+        Assert::IsFalse(NT_SUCCESS(SsValidatePassword("password1@", 10)));
+        Assert::IsFalse(NT_SUCCESS(SsValidatePassword("PASSWORD1@", 10)));
+        Assert::IsFalse(NT_SUCCESS(SsValidatePassword("PassWord@", 9)));
+        Assert::IsFalse(NT_SUCCESS(SsValidatePassword("PassWord1", 9)));
+        Assert::IsFalse(NT_SUCCESS(SsValidatePassword("Pass Word1@", 11)));
+
+        // Submission names: safe basename, no reserved devices.
+        Assert::IsTrue(NT_SUCCESS(SsValidateSubmissionName("Homework", 8)));
+        Assert::IsTrue(NT_SUCCESS(SsValidateSubmissionName("hw_1.final", 10)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateSubmissionName("..\\users.txt", 12)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateSubmissionName("CON", 3)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateSubmissionName("con.txt", 7)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateSubmissionName("x.", 2)));
+        Assert::IsFalse(NT_SUCCESS(SsValidateSubmissionName("a:b", 3)));
+
+        // Path canonicalization: reject device/ADS/trailing-dot forms.
+        Assert::IsTrue(NT_SUCCESS(SsCanonicalizeUserPath(
+            ".\\dummyData", 11, out, MAX_PATH)));
+        Assert::IsTrue(out[1] == ':');
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            badDevicePath, static_cast<uint16_t>(strlen(badDevicePath)),
+            out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            badDriveRelative, static_cast<uint16_t>(strlen(badDriveRelative)),
+            out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            badAds, static_cast<uint16_t>(strlen(badAds)),
+            out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            badTrailingDot, static_cast<uint16_t>(strlen(badTrailingDot)),
+            out, MAX_PATH)));
+
+        // Component-boundary containment.
+        Assert::IsTrue(SsIsPathInside(
+            "C:\\App\\users\\Alex\\Homework",
+            "C:\\App\\users\\Alex"));
+        Assert::IsTrue(SsIsPathInside(
+            "C:\\App\\users\\Alex",
+            "C:\\App\\users\\Alex"));
+        Assert::IsFalse(SsIsPathInside(
+            "C:\\App\\users\\Alex2",
+            "C:\\App\\users\\Alex"));
+        Assert::IsTrue(SsIsPathInside(
+            "C:\\App\\users\\Alex",
+            "C:\\App\\users"));
+        Assert::IsFalse(SsIsPathInside(
+            "C:\\App\\users\\Alex",
+            "C:\\App\\users2"));
+    };
 };
 };

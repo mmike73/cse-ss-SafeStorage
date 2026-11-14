@@ -19,8 +19,8 @@ Priority: `P0` = required for the assignment to pass, `P1` = required for full p
 | ID | Ticket | Type | Priority | Depends on | Status |
 |----|--------|------|----------|------------|--------|
 | [T01](T01-scaffolding-and-build-hygiene.md) | Project scaffolding, module layout, build hygiene | chore | P0 | — | Done |
-| [T02](T02-init-deinit-appdir.md) | Initialization, `%AppDir%` discovery, resource creation, teardown | feature | P0 | T01 | Todo |
-| [T03](T03-input-validation-and-paths.md) | Input validation and Windows path-safety helpers | security | P0 | T01 | Todo |
+| [T02](T02-init-deinit-appdir.md) | Initialization, `%AppDir%` discovery, resource creation, teardown | feature | P0 | T01 | Done |
+| [T03](T03-input-validation-and-paths.md) | Input validation and Windows path-safety helpers | security | P0 | T01 | Done |
 | [T04](T04-credential-store.md) | Credential store: PBKDF2 hashing, atomic `users.txt` | security | P0 | T02, T03 | Todo |
 | [T05](T05-register.md) | `register` command | feature | P0 | T04 | Todo |
 | [T06](T06-login-and-bruteforce.md) | `login` command and brute-force throttling | security | P0 | T04, T07 | Todo |

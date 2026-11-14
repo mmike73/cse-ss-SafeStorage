@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | security |
 | **Depends on** | T01 |
@@ -200,4 +200,12 @@ Also test `SsCopyBounded` with `DstCap == SrcLen` (must fail) and `DstCap == Src
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented the full validation/path layer: strict username/password/
+  submission allow-lists, embedded-NUL rejection, bounded copies, trusted path builders,
+  `GetFullPathNameA` canonicalization with UNC/`\\?\`/`\\.\`/drive-relative/ADS/trailing
+  dot-space/device-name rejection, component-boundary `SsIsPathInside`, and
+  handle-based `SsGetFinalPath`/`SsVerifyDirHandlePath`/`SsVerifyFileHandlePath`/
+  `SsRejectReparsePoint`; plus `SsIsProtectedAppFile`, `SsIsTempFileName`,
+  `SsGetParentDir`. Added `ValidationRejectsMaliciousInput`, which passes. Found and
+  fixed a bug where `.`/`..` components were rejected by the trailing-dot rule before
+  being recognized as normalization components.

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | feature |
 | **Depends on** | T01 |
@@ -157,4 +157,10 @@ comment above the struct.
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented `SafeStorageInit`/`SafeStorageDeinit`: two-call
+  `GetCurrentDirectoryA`, canonical `%AppDir%`, bounded `users`/`users.txt` path build,
+  reparse-point rejection and handle-based `users` path verification, `users.txt`
+  create/open without truncation, BCrypt HMAC-SHA256 provider, named mutex, and both
+  critical sections. Deinit is idempotent and wipes session/limiter/paths; debug CRT
+  leak dump enabled. `InitCreatesRequiredResources` passes. Added `SsResolveAppDir`,
+  `SsEnsureUsersDir`, `SsEnsureUsersFile` and leave command handlers to T05–T09.
