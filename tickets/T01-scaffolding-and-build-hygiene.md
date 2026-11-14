@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | chore |
 | **Depends on** | — |
@@ -94,4 +94,9 @@ the signatures in `Commands.h`.
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Added `Internal.h` (limits, globals, lock order), module headers,
+  compile-ready stubs for Validation/Crypto/CredentialStore/Session/FileTransfer, and
+  wired them into `SafeStorageLib.vcxproj`. Replaced the non-compiling `Commands.c` stub
+  with linkable `STATUS_NOT_IMPLEMENTED` entry points and the single `g_ss` definition.
+  Verified with MSVC 14.52 / VS 18, Win32 Debug, W4 + WX: all three projects build with
+  zero warnings. `out/` added to `.gitignore`.

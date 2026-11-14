@@ -8,10 +8,21 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Commands.h" />
+    <ClInclude Include="CredentialStore.h" />
+    <ClInclude Include="Crypto.h" />
+    <ClInclude Include="FileTransfer.h" />
+    <ClInclude Include="Internal.h" />
+    <ClInclude Include="Session.h" />
+    <ClInclude Include="Validation.h" />
     <ClInclude Include="includes.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Commands.c" />
+    <ClCompile Include="CredentialStore.c" />
+    <ClCompile Include="Crypto.c" />
+    <ClCompile Include="FileTransfer.c" />
+    <ClCompile Include="Session.c" />
+    <ClCompile Include="Validation.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3DAF6FE9-7A39-4C6B-9943-A66CD6274E39}</ProjectGuid>
