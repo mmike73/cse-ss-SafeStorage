@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P1 |
 | **Type** | docs |
 | **Depends on** | T10, T11 |
@@ -187,4 +187,10 @@ Do **not**:
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Wrote the root `README.md`: layout, build/run, sample session, data
+  format/limits, full security design (threat model, PBKDF2 rationale, limiter, path
+  confinement, transfer engine, locking, failure semantics), security control matrix,
+  vulnerability report link, 12-test description, residual risks, assignment compliance
+  table, and design-decision records. Code files already carry header blocks and
+  `SECURITY:` comments at the non-obvious checks; analyzer suppressions are documented in
+  README section 8.

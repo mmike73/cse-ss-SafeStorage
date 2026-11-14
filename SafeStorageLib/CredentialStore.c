@@ -343,6 +343,7 @@ SsFindUser(
 
     *Found = FALSE;
     *UserCount = 0;
+    SecureZeroMemory(Record, sizeof(*Record));
 
     while (position < File->Size)
     {

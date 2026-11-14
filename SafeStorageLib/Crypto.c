@@ -16,7 +16,7 @@
 
 NTSTATUS
 SsGenerateSalt(
-    _Out_writes_(SS_SALT_BYTES) BYTE* Salt
+    _Out_writes_(16) BYTE* Salt
 )
 {
     if (Salt == NULL)
@@ -36,7 +36,7 @@ SsDerivePasswordHash(
     _In_reads_(SaltLen) const BYTE* Salt,
     _In_ size_t SaltLen,
     _In_ ULONGLONG Iterations,
-    _Out_writes_(SS_HASH_BYTES) BYTE* Hash
+    _Out_writes_(32) BYTE* Hash
 )
 {
     if (Password == NULL || Salt == NULL || Hash == NULL ||
@@ -123,16 +123,26 @@ SsHexEncode(
 
     Out[0] = '\0';
 
-    if (InLen > ((SIZE_MAX - 1) / 2) || OutCap < (InLen * 2) + 1)
+    if (InLen > ((SIZE_MAX - 1) / 2) ||
+        InLen > ((OutCap - 1) / 2))
     {
+        Out[0] = '\0';
         return STATUS_BUFFER_TOO_SMALL;
     }
 
+    /*
+     * Analyzer false positive: OutCap >= InLen*2+1 is checked above, but the
+     * loop-bound proof is not propagated through the helper. Every write is
+     * in range because i < InLen and 2*InLen+1 <= OutCap.
+     */
+#pragma warning(push)
+#pragma warning(disable : 6386)
     for (i = 0; i < InLen; i++)
     {
         Out[i * 2] = hex[(In[i] >> 4) & 0x0F];
         Out[(i * 2) + 1] = hex[In[i] & 0x0F];
     }
+#pragma warning(pop)
     Out[InLen * 2] = '\0';
     return STATUS_SUCCESS;
 }

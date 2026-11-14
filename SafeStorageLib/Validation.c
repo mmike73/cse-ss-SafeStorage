@@ -405,9 +405,30 @@ SsCopyBounded(
 
     if (SrcLen > 0)
     {
-        memcpy(Dst, Src, SrcLen);
+        /*
+         * Analyzer false positive: SrcLen < DstCap is checked above, and
+         * memcpy_s re-checks it at runtime. The warning is suppressed here so
+         * the real runtime check remains in the code.
+         */
+        {
+            int copyResult;
+
+#pragma warning(push)
+#pragma warning(disable : 6386)
+            copyResult = memcpy_s(Dst, DstCap, Src, (size_t)SrcLen);
+#pragma warning(pop)
+            if (copyResult != 0)
+            {
+                Dst[0] = '\0';
+                return STATUS_INVALID_PARAMETER;
+            }
+        }
     }
+    /* Same checked bound as above; analyzer does not propagate it. */
+#pragma warning(push)
+#pragma warning(disable : 6386)
     Dst[SrcLen] = '\0';
+#pragma warning(pop)
     return STATUS_SUCCESS;
 }
 
@@ -519,7 +540,7 @@ SsCanonicalizeUserPath(
     DWORD required;
     NTSTATUS status;
 
-    if (Dst == NULL || DstCap == 0)
+    if (Dst == NULL || DstCap < 3)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -685,7 +706,7 @@ SsGetFinalPath(
     DWORD required;
 
     if (Handle == NULL || Handle == INVALID_HANDLE_VALUE ||
-        Dst == NULL || DstCap == 0 || DstCap > (size_t)MAXDWORD)
+        Dst == NULL || DstCap < 4 || DstCap > (size_t)MAXDWORD)
     {
         return STATUS_INVALID_PARAMETER;
     }

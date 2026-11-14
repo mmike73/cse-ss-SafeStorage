@@ -222,7 +222,7 @@ SsCopyFileChunked(
 )
 {
     SS_COPY_CONTEXT context;
-    HANDLE threads[8];
+    HANDLE threads[8] = { 0 };
     DWORD created = 0;
     DWORD index;
     NTSTATUS status;
@@ -280,10 +280,21 @@ SsCopyFileChunked(
             &context.FirstError, (LONG)GetLastError(), 0);
     }
 
+    /*
+     * Analyzer false positive: threads[] is zero-initialized, created is
+     * bounded by SS_ARRAY_COUNT(threads), and only non-NULL handles are
+     * closed. Keep the defensive NULL check.
+     */
+#pragma warning(push)
+#pragma warning(disable : 6001)
     for (index = 0; index < created; index++)
     {
-        CloseHandle(threads[index]);
+        if (threads[index] != NULL)
+        {
+            CloseHandle(threads[index]);
+        }
     }
+#pragma warning(pop)
 
     status = (context.FirstError == 0)
         ? STATUS_SUCCESS

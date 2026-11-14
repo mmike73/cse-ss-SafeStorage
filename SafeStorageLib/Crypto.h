@@ -17,7 +17,7 @@
 
 NTSTATUS
 SsGenerateSalt(
-    _Out_writes_(SS_SALT_BYTES) BYTE* Salt
+    _Out_writes_(16) BYTE* Salt
 );
 
 NTSTATUS
@@ -27,7 +27,7 @@ SsDerivePasswordHash(
     _In_reads_(SaltLen) const BYTE* Salt,
     _In_ size_t SaltLen,
     _In_ ULONGLONG Iterations,
-    _Out_writes_(SS_HASH_BYTES) BYTE* Hash
+    _Out_writes_(32) BYTE* Hash
 );
 
 /* Constant-time comparison; do not replace with memcmp for hashes. */

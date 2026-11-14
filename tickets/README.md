@@ -29,7 +29,7 @@ Priority: `P0` = required for the assignment to pass, `P1` = required for full p
 | [T09](T09-retrieve-threadpool.md) | `retrieve` command with 4-thread chunked download | feature | P0 | T08 | Done |
 | [T10](T10-tests-fuzz-bruteforce.md) | Unit, negative, fuzz, brute-force and concurrency tests | test | P0 | T05–T09 | Todo |
 | [T11](T11-vulnerability-report-main-hardening.md) | `vulnerabilities.txt` and minimal `main.c` hardening | security/docs | P1 | T01, T10 | Done |
-| [T12](T12-readme-security-design.md) | `README.md` security design + mandatory code comments | docs | P1 | T10, T11 | Todo |
+| [T12](T12-readme-security-design.md) | `README.md` security design + mandatory code comments | docs | P1 | T10, T11 | Done |
 | [T13](T13-final-quality-gate.md) | Final gate: SAL, analysis, leaks, fuzzing, packaging | QA | P0 | all | Todo |
 
 Recommended execution order (flat, no phases):
