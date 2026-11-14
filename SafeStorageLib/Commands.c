@@ -1,14 +1,38 @@
 ﻿#include "Commands.h"
 
+#define APPDATA_LOCAL_DIR_PATH "~"
+#define APP_NAME "SafeStorage"
+
 
 NTSTATUS WINAPI
 SafeStorageInit(
     VOID
 )
 {
-    /* The function is not implemented. It is your responsibility. */
-    /* Here you can create any global objects you consider necessary. */
+    // Finding the AppData directory and forfirming or creting the SafeStorage folder
+    FILE* app_data_dir = fopen(APPDATA_LOCAL_DIR_PATH, "r");
+    printf("starting\n");
+    if (app_data_dir) {
+        int no_chars = strlen(APPDATA_LOCAL_DIR_PATH + strlen(APP_NAME) + 2;
+        printf("no chars: %d\n", no_chars);
+        char* application_dir_path = malloc(no_chars);
+        application_dir_path[0] = '\0';
+        strcat(application_dir_path, APPDATA_LOCAL_DIR_PATH);
+        int l = strlen(application_dir_path);
+        application_dir_path[l] = '\\';
+        application_dir_path[l + 1] = '\0';
+        strcat(application_dir_path, APP_NAME);
+        printf("%s\n", application_dir_path);
+        FILE* application_dir = fopen(application_dir_path, "r");
 
+        if (application_dir) {
+            printf("reached\n");
+            fclose(application_dir);
+        }
+
+        fclose(app_data_dir);
+        free(application_dir_path);
+    }
     return STATUS_SUCCESS;
 }
 
