@@ -121,6 +121,58 @@ TEST_CLASS(UserActivityTest)
         Assert::IsTrue(std::filesystem::is_regular_file(".\\users.txt"));
     };
 
+    TEST_METHOD(RegisterCreatesUserAndRejectsDuplicates)
+    {
+        const char username[] = "RegAa";
+        const char password[] = "PassWord1@";
+        NTSTATUS status;
+
+        status = SafeStorageHandleRegister(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        Assert::IsTrue(std::filesystem::is_directory(".\\users\\RegAa"));
+
+        std::ifstream usersFile(".\\users.txt");
+        std::string line;
+        bool found = false;
+        while (std::getline(usersFile, line))
+        {
+            if (line.rfind("RegAa:", 0) == 0)
+            {
+                found = true;
+            }
+            Assert::IsTrue(line.find(password) == std::string::npos);
+        }
+        Assert::IsTrue(found);
+
+        // Same case and different case are both collisions on NTFS.
+        status = SafeStorageHandleRegister(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+        status = SafeStorageHandleRegister(
+            "regaa", 5, password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        // Invalid username fails before creating anything.
+        status = SafeStorageHandleRegister(
+            "Al", 2, password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+        Assert::IsFalse(std::filesystem::exists(".\\users\\Al"));
+
+        // Register is unavailable while a user is logged in.
+        EnterCriticalSection(&g_ss.StateLock);
+        SsSessionSetLocked("UserA");
+        LeaveCriticalSection(&g_ss.StateLock);
+        status = SafeStorageHandleRegister(
+            "RegBb", 5, password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+        Assert::IsFalse(std::filesystem::exists(".\\users\\RegBb"));
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+    };
+
     TEST_METHOD(CredentialStoreHashesAndVerifies)
     {
         const char usernameA[] = "CredA";

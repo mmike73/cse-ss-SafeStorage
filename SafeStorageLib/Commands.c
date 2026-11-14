@@ -1,5 +1,7 @@
 ﻿#include "Commands.h"
+#include "CredentialStore.h"
 #include "Internal.h"
+#include "Session.h"
 #include "Validation.h"
 
 /*
@@ -326,7 +328,43 @@ SafeStorageDeinit(
 
 
 /* ------------------------------------------------------------------------- */
-/* Command handlers (implemented in later tickets)                            */
+/* Command helpers                                                            */
+/* ------------------------------------------------------------------------- */
+
+static NTSTATUS
+SsVerifyUserDir(
+    _In_z_ const char* UserDir
+)
+{
+    HANDLE dirHandle;
+    NTSTATUS status;
+
+    dirHandle = CreateFileA(
+        UserDir,
+        FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+
+    if (dirHandle == INVALID_HANDLE_VALUE)
+    {
+        return SsNtStatusFromWin32(GetLastError());
+    }
+
+    status = SsRejectReparsePoint(dirHandle);
+    if (NT_SUCCESS(status))
+    {
+        status = SsVerifyDirHandlePath(dirHandle, UserDir);
+    }
+
+    CloseHandle(dirHandle);
+    return status;
+}
+
+/* ------------------------------------------------------------------------- */
+/* register <username> <password>                                             */
 /* ------------------------------------------------------------------------- */
 
 NTSTATUS WINAPI
@@ -337,11 +375,85 @@ SafeStorageHandleRegister(
     uint16_t PasswordLength
 )
 {
-    UNREFERENCED_PARAMETER(Username);
-    UNREFERENCED_PARAMETER(UsernameLength);
-    UNREFERENCED_PARAMETER(Password);
-    UNREFERENCED_PARAMETER(PasswordLength);
-    return STATUS_NOT_IMPLEMENTED;
+    char username[SS_USERNAME_MAX + 1];
+    char userDir[MAX_PATH];
+    BOOL exists = FALSE;
+    NTSTATUS status;
+
+    if (!g_ss.Initialized)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (Username == NULL || Password == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = SsCopyBounded(username, sizeof(username), Username, UsernameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsValidateUsername(username, UsernameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsValidatePassword(Password, PasswordLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    if (SsSessionIsLoggedIn())
+    {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+
+    status = SsUserExists(username, &exists);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (exists)
+    {
+        return STATUS_OBJECT_NAME_COLLISION;
+    }
+
+    status = SsBuildUserDir(userDir, sizeof(userDir), username);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    if (!CreateDirectoryA(userDir, NULL))
+    {
+        DWORD error = GetLastError();
+
+        if (error == ERROR_ALREADY_EXISTS)
+        {
+            /* SECURITY: never reuse a pre-existing directory; it could be a
+             * planted junction or belong to an account created out-of-band. */
+            return STATUS_OBJECT_NAME_COLLISION;
+        }
+        return SsNtStatusFromWin32(error);
+    }
+
+    status = SsVerifyUserDir(userDir);
+    if (!NT_SUCCESS(status))
+    {
+        (void)RemoveDirectoryA(userDir);
+        return status;
+    }
+
+    status = SsUserAdd(username, Password, PasswordLength);
+    if (!NT_SUCCESS(status))
+    {
+        (void)RemoveDirectoryA(userDir);
+        return status;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 
@@ -366,7 +478,12 @@ SafeStorageHandleLogout(
     VOID
 )
 {
-    return STATUS_NOT_IMPLEMENTED;
+    if (!g_ss.Initialized)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    return SsSessionLogout();
 }
 
 

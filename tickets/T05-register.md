@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | feature |
 | **Depends on** | T04 |
@@ -112,4 +112,10 @@ Order of operations (matters for both security and cleanup):
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented register: bounded copy + username/password validation,
+  logged-in check, case-insensitive duplicate check, atomic `CreateDirectoryA`, reparse
+  verification, `SsUserAdd`, and directory rollback on failure. Also wired
+  `SafeStorageHandleLogout` to `SsSessionLogout` (missed in the T07 commit).
+  `RegisterCreatesUserAndRejectsDuplicates` passes: directory/users.txt created,
+  plaintext absent, same/case-variant duplicates rejected, invalid input creates
+  nothing, and registering while logged in fails.
