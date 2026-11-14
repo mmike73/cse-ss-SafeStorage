@@ -1,0 +1,446 @@
+SafeStorage - Vulnerability Report
+==================================
+
+1. Scope and method
+-------------------
+
+This report covers:
+
+  * the vulnerabilities in the delivered SafeStorage/main.c;
+  * the vulnerabilities in the delivered SafeStorageLib/Commands.c stub;
+  * design-level security problems that were considered while implementing
+    SafeStorageLib, with their mitigations and residual risks.
+
+Method: manual review of every parser/format-string/copy/buffer operation,
+CWE-based threat modelling of each command, and adversarial tests in
+SafeStorageUnitTests (invalid input matrix, path traversal/alias cases,
+fuzzing, brute force, cross-user isolation, 8 GiB limit, transfer integrity).
+
+The primary defence is in SafeStorageLib: main.c is a thin parser and its
+fixes are defence in depth. main.c was modified ONLY for the vulnerability
+fixes listed in section 5; the command grammar and functional behaviour were
+preserved. If a pristine main.c is required, the library still validates every
+parameter it receives; the parser fixes can be reverted independently.
+
+Line numbers are PRE-FIX line numbers in the delivered SafeStorage/main.c.
+
+
+2. Findings in SafeStorage/main.c
+---------------------------------
+
+ID    : V-01
+File  : SafeStorage/main.c
+Lines : 39, 54
+Class : Stack buffer overflow (CWE-121, CWE-787)
+Impact: `char command[10]; scanf("%s", command);` has no field width. Any
+        command longer than 9 characters overwrites the adjacent stack
+        variables (`arg1`, `arg2`, saved state), crashing the process and,
+        in a build without a stack cookie, providing a memory-corruption
+        primitive. A 10 KB token is enough to reliably crash.
+Fix   : Replaced with a bounded token reader (ReadToken) that writes at most
+        Cap-1 bytes, drains the rest of an overlong token, and reports it.
+        An overlong token is rejected as a command; its tail is not parsed.
+
+ID    : V-02
+File  : SafeStorage/main.c
+Lines : 40-41, 58-59, 66-67, 79-80, 87-88
+Class : Stack buffer overflow (CWE-121)
+Impact: `arg1`/`arg2` are `char[MAX_PATH]` but are filled with unbounded
+        `%s`. A username/password/path longer than 259 bytes overwrites the
+        stack, including the next command buffer.
+Fix   : All argument reads use ReadToken(arg, sizeof(arg)); overlong tokens
+        are rejected and drained. No truncation into a valid-looking value.
+
+ID    : V-03
+File  : SafeStorage/main.c
+Lines : 58-59, 66-67, 79-80, 87-88
+Class : Unchecked return value / uninitialized use (CWE-252, CWE-457)
+Impact: scanf return values are ignored. On EOF or a failed conversion,
+        arg1/arg2 contain uninitialized stack data (first iteration) or the
+        previous command's values. strlen() and the handlers then read
+        invalid memory and may operate on stale credentials/paths.
+Fix   : Every ReadToken result is checked. Buffers are initialized and on
+        EOF/error the command is not executed.
+
+ID    : V-04
+File  : SafeStorage/main.c
+Lines : 61, 69
+Class : Sensitive information exposure (CWE-532)
+Impact: `printf("... password [%s] ...", arg2)` prints the plaintext
+        password to the console, where it remains in scrollback, screen
+        recordings, terminal logs, and shared screens.
+Fix   : The password is no longer printed anywhere. The parser prints only
+        the username; the handler result is reported as a status code. The
+        password buffer is wiped with SecureZeroMemory after use.
+
+ID    : V-05
+File  : SafeStorage/main.c
+Lines : 102
+Class : Uncontrolled loop / DoS (CWE-835)
+Impact: `do { ... } while (TRUE)` never exits on EOF. Once stdin is closed,
+        scanf fails immediately and the process spins at 100% CPU forever.
+Fix   : ReadToken distinguishes EOF; the main loop breaks on EOF/read error.
+        The process exits and calls SafeStorageDeinit.
+
+ID    : V-06
+File  : SafeStorage/main.c
+Lines : 62, 70, 83, 91
+Class : Integer truncation (CWE-197)
+Impact: `(uint16_t)strlen(arg)` narrows size_t. Values above 65535 wrap and
+        the library would see a short length for a longer buffer. It is
+        latent today because the parser buffers are 260 bytes, but it becomes
+        exploitable if the input bounds are ever raised or a different parser
+        is used.
+Fix   : Length16() checks the size_t length and returns UINT16_MAX rather
+        than silently wrapping; ReadToken already bounds every argument.
+
+ID    : V-07
+File  : SafeStorage/main.c
+Lines : 62, 70, 83, 91
+Class : Unchecked status / silent failure (CWE-252, CWE-703)
+Impact: Return values of SafeStorageHandle* are ignored. The user is told
+        "register/login ..." even when the operation failed; security
+        failures (locked out, invalid input, path rejected) are invisible.
+Fix   : Every handler status is checked with NT_SUCCESS and reported via
+        ReportStatus ("succeeded" or "failed with status 0x........").
+
+ID    : V-08
+File  : SafeStorage/main.c
+Lines : 56, 64, 72, 77, 85, 93
+Class : Improper NUL handling / brittle comparison (CWE-170)
+Impact: `memcmp(command, "register", sizeof("register"))` compares the
+        literal's NUL terminator and relies on the command buffer being
+        NUL-terminated. Combined with V-01 this is fragile, and extra tokens
+        (e.g. "login a b c") become the next command.
+Fix   : The command buffer is always NUL-terminated by ReadToken and is
+        compared with strcmp against exact command names.
+
+ID    : V-09
+File  : SafeStorage/main.c
+Lines : 39-41
+Class : Uninitialized stack data (CWE-457)
+Impact: command/arg1/arg2 are not initialized. If the first read fails, the
+        program compares/uses indeterminate stack bytes.
+Fix   : All three buffers are initialized (`= { 0 }`) and ReadToken always
+        NUL-terminates or reports failure before use.
+
+ID    : V-10
+File  : SafeStorage/main.c
+Lines : 61, 69, 83, 91
+Class : Sensitive data in memory (CWE-226)
+Impact: The plaintext password stays in arg2 for the rest of the process
+        after the handler returns; it can be recovered from a memory dump.
+Fix   : SecureZeroMemory(arg2, sizeof(arg2)) after register and login.
+        (The console/OS may still echo typed input; see limitations.)
+
+ID    : V-11
+File  : SafeStorage/main.c
+Lines : 36
+Class : Style / robustness (no CWE)
+Impact: `int CDECL main()` uses a K&R empty parameter list instead of
+        `main(void)`; harmless but not warning/analyzer clean.
+Fix   : `int CDECL main(void)`.
+
+ID    : V-12
+File  : SafeStorage/main.c
+Lines : 54, 58, 66, 79, 87
+Class : Input handling limitation (CWE-20)
+Impact: `%s` stops at whitespace, so paths containing spaces cannot be
+        entered; users may quote them in ways the parser does not understand
+        and accidentally select another file.
+Fix   : The bounded token reader keeps the documented token grammar (paths
+        with spaces are unsupported in the CLI). The library API accepts
+        arbitrary path strings, so a future parser can add quoting without
+        changing the library. The limitation is documented in README.md.
+
+Verified non-findings in main.c:
+  * No format-string vulnerability: every printf format is a literal and user
+    data is only passed to %s.
+  * No command/SQL/shell injection sink (no system/popen/WinExec/ShellExecute).
+  * No environment-variable expansion of user paths.
+  * No TOCTOU file operation in main.c itself.
+
+
+3. Findings in the provided SafeStorageLib/Commands.c stub
+----------------------------------------------------------
+
+The delivered stub was replaced by the implementation. It is still listed
+because a reviewer expects the starting code to be audited.
+
+ID    : V-13
+File  : SafeStorageLib/Commands.c
+Lines : 3
+Class : Functional / path correctness (no CWE)
+Impact: `#define APPDATA_LOCAL_DIR_PATH "~"` is used as a filesystem path.
+        Windows does not expand `~`; the code looks for a file named "~" in
+        the current directory and cannot find the application directory.
+Fix   : %AppDir% is obtained with GetCurrentDirectoryA (two-call pattern).
+
+ID    : V-14
+File  : SafeStorageLib/Commands.c
+Lines : 16
+Class : Compile error / out-of-bounds read (CWE-125)
+Impact: `strlen(APPDATA_LOCAL_DIR_PATH + strlen(APP_NAME) + 2;` is missing a
+        `)` and evaluates pointer arithmetic past the 2-byte "~" literal, i.e.
+        an out-of-bounds read if the syntax error is naively repaired.
+Fix   : Replaced by explicit length arithmetic on validated buffers.
+
+ID    : V-15
+File  : SafeStorageLib/Commands.c
+Lines : 18
+Class : Unchecked allocation / NULL dereference (CWE-690, CWE-476)
+Impact: `malloc(no_chars)` is not checked; the result is written immediately.
+        `no_chars` is an int computed from size_t values and can be zero.
+Fix   : Every allocation is checked; sizes are validated before allocation.
+
+ID    : V-16
+File  : SafeStorageLib/Commands.c
+Lines : 18-24
+Class : Wrong allocation size / heap overflow (CWE-787, CWE-131)
+Impact: The buffer size uses strlen(APP_NAME) instead of the full path
+        length, omits the separator/NUL, then strcat appends to a buffer that
+        was only initialized with a single NUL. This writes past the
+        allocation.
+Fix   : Paths are built with StringCchPrintfA into bounded MAX_PATH buffers.
+
+ID    : V-17
+File  : SafeStorageLib/Commands.c
+Lines : 21-24
+Class : Signed/unsigned and narrowing (CWE-197)
+Impact: `int l = strlen(...)` and `application_dir_path[l] = '\\'` use an int
+        for a size_t, with no bounds check before writing l and l+1.
+Fix   : Replaced with checked size_t/HRESULT operations.
+
+ID    : V-18
+File  : SafeStorageLib/Commands.c
+Lines : 26-32
+Class : Misused API / ignored failure (CWE-252)
+Impact: `fopen(path, "r")` is used as a directory-existence check. On Windows
+        fopen on a directory fails, so the branch is effectively dead and the
+        code cannot distinguish "missing" from "is a directory".
+Fix   : CreateFileA + GetFileAttributesA + handle checks (file/dir/reparse/
+        expected path).
+
+ID    : V-19
+File  : SafeStorageLib/Commands.c
+Lines : 36
+Class : Error masking (CWE-703)
+Impact: SafeStorageInit always returns STATUS_SUCCESS even when every step
+        failed; the application then runs without users/users.txt.
+Fix   : Real error propagation; Init fails closed and main exits.
+
+
+4. Design-level and other potential vulnerabilities
+---------------------------------------------------
+
+Each row is a threat considered for SafeStorageLib, the mitigation, and the
+residual risk honestly remaining.
+
+Path traversal via username or submission name
+  CWE-22. Mitigation: username is [A-Za-z]{5,10}; submission name is
+  [A-Za-z0-9._-]{1,100}; paths are built only from trusted components.
+  Residual: none.
+
+Windows device names (CON, PRN, AUX, NUL, COM1..9, LPT1..9, CLOCK$)
+  CWE-67. Mitigation: reserved base-name check for username/submission/path
+  components. Residual: none.
+
+Trailing dot/space aliasing, 8.3 short names, alternate data streams
+  CWE-41/64. Mitigation: reject components ending in dot/space; reject ':'
+  except the drive prefix; resolve checks with GetFinalPathNameByHandleA.
+  Residual: none for protected assets; ordinary destination aliases outside
+  the protected set are allowed by design.
+
+UNC, \\?\, \\.\, drive-relative and device paths
+  CWE-41. Mitigation: rejected by SsCanonicalizeUserPath; only relative or
+  drive-absolute local paths are accepted. Residual: none.
+
+Junction/symlink planted in a user directory (app runs elevated)
+  CWE-59/61. Mitigation: reject reparse points on the user dir, submission,
+  destination, and temp; verify expected paths by handle. Residual: a small
+  TOCTOU window inherent in Win32 path APIs; documented.
+
+Hardlink to another user's file or users.txt
+  CWE-59. Mitigation: reject sources/destinations with nNumberOfLinks > 1.
+  Residual: legitimate hardlinked external sources are refused; documented.
+
+Cross-user data leak via store source
+  CWE-639/732. Mitigation: the source handle is resolved and confined: only
+  the current user's directory, non-protected %AppDir% files, or external
+  files are allowed; other users' directories, users.txt, temp files, and the
+  executable are denied. Residual: none within the app; a local admin can
+  still read the files directly.
+
+retrieve overwrites users.txt / user storage / executable
+  CWE-732/59. Mitigation: parent-directory handle check refuses
+  %AppDir%\users\*, and protected-file checks refuse users.txt* and
+  the executable. Ordinary files in %AppDir% (e.g. .\dummyData, required by
+  the existing test) remain allowed. Residual: other files in %AppDir% can be
+  overwritten by design.
+
+Case-insensitive NTFS creates two users in one directory
+  CWE-178/41. Mitigation: usernames are compared case-insensitively for
+  duplicates and directory lookup. Residual: none.
+
+Brute force / credential stuffing
+  CWE-307. Mitigation: global sliding window of 5 failures per second;
+  correct passwords are rejected while locked; success resets the window.
+  Residual: the limiter is in memory and resets on restart; 5 PBKDF2
+  operations/second can still consume CPU.
+
+Username enumeration by status or timing
+  CWE-204/208. Mitigation: the same STATUS_LOGON_FAILURE for unknown user and
+  wrong password; unknown users still run PBKDF2 with a dummy salt;
+  constant-time hash compare. Residual: duplicate registration necessarily
+  reveals that a username exists (required by the assignment).
+
+Weak or unsalted password storage
+  CWE-759/760/916. Mitigation: PBKDF2-HMAC-SHA256, 16-byte BCryptGenRandom
+  salt, 210k iterations, per-record iteration count, strict hex parsing.
+  Residual: no memory-hard KDF (Argon2 is not in CNG); acceptable for the lab.
+
+Password exposure
+  CWE-256/532. Mitigation: only salt+hash are stored; the library prints
+  nothing; main.c no longer prints or leaves the password in arg2. Residual:
+  the console may echo typed input; OS pagefile/crash dumps may contain
+  transient copies (SecureZeroMemory is best-effort).
+
+Timing attack on hash comparison
+  CWE-208. Mitigation: XOR-accumulate comparison over all hash bytes.
+  Residual: none.
+
+Buffer overflow in any parser
+  CWE-121/787. Mitigation: SsCopyBounded, StringCch*, strict length caps, no
+  strcpy/strcat/sprintf in the library, no scanf in main. Residual: none.
+
+Embedded NUL truncation
+  CWE-158. Mitigation: memchr rejection on every (pointer,length) input and
+  length-based copies. Residual: none.
+
+Integer overflow on 8 GiB files / 32-bit build
+  CWE-190/197. Mitigation: ULONGLONG/LARGE_INTEGER sizes and offsets, 64-bit
+  chunk index, DWORD chunk sizes bounded by 64 KiB. Residual: none.
+
+Thread race corrupts the transfer
+  CWE-362/662. Mitigation: atomic chunk index; one buffer and one event per
+  worker; positional OVERLAPPED I/O; first-error wins; join before return.
+  Residual: none observed; integrity tests pass.
+
+Deadlock / lock-order inversion
+  CWE-833. Mitigation: documented order StateLock -> UsersLock; transfers
+  take no global lock; login is serialized and never waits for a transfer.
+  Residual: none.
+
+Partial file visible after a crash/failure
+  CWE-662. Mitigation: random temp + FlushFileBuffers + size check +
+  MoveFileExA(REPLACE_EXISTING|WRITE_THROUGH). Residual: power loss during
+  the rename yields old or new, never a mix.
+
+Partial/truncated destination on failed retrieve
+  CWE-459. Mitigation: copy to a temp in the destination directory and
+  replace atomically; the old destination survives any failure. Residual:
+  same power-loss semantics.
+
+Disk exhaustion / DoS
+  CWE-400. Mitigation: 8 GiB per-file cap, bounded users.txt (4 MiB, 10k
+  users), bounded names/passwords; fixed 4 workers. Residual: a user can
+  still fill the disk up to 8 GiB per submission; no per-user quota.
+
+Malformed/corrupt users.txt
+  CWE-20/252. Mitigation: bounded line buffer, strict field/hex/iteration
+  validation, duplicate-record detection, fail closed with STATUS_DATA_ERROR.
+  Residual: a corrupt DB blocks login until repaired; documented.
+
+Concurrent app instances lose an update
+  CWE-362. Mitigation: UsersLock + Local named mutex + atomic replace.
+  Residual: if the mutex cannot be created, Init fails closed.
+
+Resource leaks on error paths
+  CWE-404/459. Mitigation: single cleanup path per command; close/delete/join
+  everywhere; CRT leak dump in debug. Residual: an abrupt process kill can
+  leave a temp file (documented; harmless).
+
+Crash on NULL/0/oversized API arguments
+  CWE-476/20. Mitigation: every public/internal function validates pointer
+  and length before dereference. Residual: a caller that lies about the
+  length of its own buffer is outside the API contract.
+
+Sensitive data in debug output
+  CWE-532. Mitigation: the library produces no output; no user data is passed
+  to OutputDebugString. Residual: none.
+
+Elevated confused deputy for store sources
+  CWE-668. Mitigation: explicit local path, read-only open, protected-asset
+  and cross-user checks. Residual: a local user who can drive the elevated
+  console can ask it to read external files they can name; out of scope for a
+  local CLI.
+
+No encryption of submissions at rest
+  CWE-311. Mitigation: none required by the assignment; OS ACLs apply.
+  Residual: anyone with filesystem access can read submissions; documented.
+
+Per-OS-user ACLs on app user directories
+  CWE-732. Mitigation: app-level isolation (session + path confinement).
+  Residual: app usernames are not Windows accounts, so automatic per-user
+  ACL mapping is not possible; inherited %AppDir% ACLs apply. Documented.
+
+App directory writable by a non-admin
+  CWE-732. Mitigation: the app assumes %AppDir% is protected and runs
+  elevated. Residual: if a lower-privileged user can write %AppDir%, they can
+  replace the executable or plant files; deployment ACL hardening is
+  recommended, not an app control.
+
+
+5. Fixes applied to main.c (and why they are vulnerability fixes)
+-----------------------------------------------------------------
+
+All changes are marked with FIX V-xx comments in main.c. The command grammar
+is unchanged (whitespace-separated tokens; command names are lowercase).
+
+  V-01/V-02/V-03/V-05/V-09: added ReadToken(), a bounded whitespace-delimited
+    reader. It initializes the destination, NUL-terminates on success, drains
+    and reports overlong tokens, distinguishes EOF/error, and never writes
+    past Cap-1 bytes. The main loop breaks on EOF and rejects oversized input
+    instead of spinning or using stale arguments.
+  V-04/V-10: removed all password printing; SecureZeroMemory(arg2) after
+    register/login. ReportStatus prints only the command name and NTSTATUS.
+  V-06: Length16() checks size_t -> uint16_t conversion.
+  V-07: every SafeStorageHandle* return value is checked and reported.
+  V-08: strcmp against exact command literals; command is always terminated.
+  V-11: main(void).
+
+main.c does not validate usernames/passwords/paths itself; SafeStorageLib
+does. The parser fixes are defence in depth and ensure a malformed line can
+never reach the library with an unbounded/stale buffer.
+
+
+6. Verification
+---------------
+
+Build:
+  Visual Studio 18 / MSVC 14.52, Win32 Debug, Warning Level 4,
+  Treat Warnings As Errors = YES. All three projects build with zero
+  warnings.
+
+Unit tests (SafeStorageUnitTests, 12 tests, all passing):
+  * UserRegisterLoginLogout; FileTransfer (original tests);
+  * InitCreatesRequiredResources;
+  * ValidationRejectsMaliciousInput (traversal, device names, ADS,
+    trailing dots/spaces, reserved names, path containment);
+  * CredentialStoreHashesAndVerifies (no plaintext, unique salts, wrong/
+    unknown users, case-insensitive duplicate);
+  * RegisterCreatesUserAndRejectsDuplicates;
+  * LoginAndBruteForce (5 failures/second, correct rejected while locked,
+    unknown vs wrong status);
+  * SessionAndRateLimiter;
+  * StoreRetrieveRoundTripAndIsolation (1 MiB integrity, cross-user denial,
+    users.txt/user-dir/alias destination denial, .\\dummyData allowed);
+  * TransferEdgeCases (0-byte, 1-byte, overwrite, missing files, traversal,
+    temp cleanup);
+  * FuzzValidationAndPaths (4000 random inputs, NULL/0 API calls);
+  * RejectsOverEightGiB (opt-in with SS_RUN_LARGE_TESTS=1; sparse file).
+
+Manual parser checks:
+  * 10 KB command token -> "Invalid or oversized input", then exit; no crash.
+  * EOF immediately -> clean exit; no spin.
+  * register/login/logout -> no password in the output; statuses reported.
