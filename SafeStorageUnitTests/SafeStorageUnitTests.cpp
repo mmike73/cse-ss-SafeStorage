@@ -244,6 +244,129 @@ TEST_CLASS(UserActivityTest)
         Assert::IsTrue(lineA != lineB); // different salts -> different hashes
     };
 
+    TEST_METHOD(StoreRetrieveRoundTripAndIsolation)
+    {
+        const char userA[] = "StorA";
+        const char userB[] = "StorB";
+        const char password[] = "PassWord1@";
+        const char submission[] = "Report";
+        const char sourceFile[] = ".\\stor_src.bin";
+        const char destFile[] = ".\\stor_dst.bin";
+        const size_t payloadSize = 1024 * 1024 + 123; // > several 64 KiB chunks
+        NTSTATUS status;
+
+        (void)SafeStorageHandleLogout();
+        std::filesystem::remove(sourceFile);
+        std::filesystem::remove(destFile);
+
+        {
+            std::ofstream out(sourceFile, std::ios::binary);
+            for (size_t i = 0; i < payloadSize; i++)
+            {
+                out.put(static_cast<char>((i * 31u + 7u) & 0xFFu));
+            }
+        }
+
+        status = SafeStorageHandleRegister(
+            userA, static_cast<uint16_t>(strlen(userA)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        status = SafeStorageHandleRegister(
+            userB, static_cast<uint16_t>(strlen(userB)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SafeStorageHandleLogin(
+            userA, static_cast<uint16_t>(strlen(userA)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SafeStorageHandleStore(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            sourceFile, static_cast<uint16_t>(strlen(sourceFile)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(std::filesystem::is_regular_file(
+            ".\\users\\StorA\\Report"));
+
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            destFile, static_cast<uint16_t>(strlen(destFile)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(std::filesystem::file_size(sourceFile) ==
+                       std::filesystem::file_size(destFile));
+
+        {
+            std::ifstream inA(sourceFile, std::ios::binary);
+            std::ifstream inB(destFile, std::ios::binary);
+            std::vector<char> bytesA((std::istreambuf_iterator<char>(inA)),
+                                     std::istreambuf_iterator<char>());
+            std::vector<char> bytesB((std::istreambuf_iterator<char>(inB)),
+                                     std::istreambuf_iterator<char>());
+            Assert::IsTrue(bytesA == bytesB);
+        }
+
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+
+        // Cross-user isolation: B cannot retrieve A's file, cannot use A's
+        // directory as a store source, and cannot read the credential DB.
+        status = SafeStorageHandleLogin(
+            userB, static_cast<uint16_t>(strlen(userB)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            destFile, static_cast<uint16_t>(strlen(destFile)));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        status = SafeStorageHandleStore(
+            "Stolen", 6,
+            ".\\users\\StorA\\Report",
+            static_cast<uint16_t>(strlen(".\\users\\StorA\\Report")));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        status = SafeStorageHandleStore(
+            "Hashes", 6,
+            ".\\users.txt",
+            static_cast<uint16_t>(strlen(".\\users.txt")));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+
+        // A cannot overwrite the DB, another user's directory, or use path
+        // aliases; ordinary destinations in %AppDir% remain allowed.
+        status = SafeStorageHandleLogin(
+            userA, static_cast<uint16_t>(strlen(userA)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            ".\\users.txt",
+            static_cast<uint16_t>(strlen(".\\users.txt")));
+        Assert::IsFalse(NT_SUCCESS(status));
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            ".\\users\\StorA\\x",
+            static_cast<uint16_t>(strlen(".\\users\\StorA\\x")));
+        Assert::IsFalse(NT_SUCCESS(status));
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            ".\\users.txt.",
+            static_cast<uint16_t>(strlen(".\\users.txt.")));
+        Assert::IsFalse(NT_SUCCESS(status));
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            ".\\dummyData",
+            static_cast<uint16_t>(strlen(".\\dummyData")));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+
+        std::filesystem::remove(sourceFile);
+        std::filesystem::remove(destFile);
+    };
+
     TEST_METHOD(LoginAndBruteForce)
     {
         const char username[] = "LogAa";

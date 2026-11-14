@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | feature |
 | **Depends on** | T08 |
@@ -196,4 +196,12 @@ Never truncate the destination before the copy succeeds:
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented retrieve with the shared 4-worker engine: submission source
+  opened with `FILE_FLAG_OPEN_REPARSE_POINT`, reparse/directory/hardlink rejection, source
+  confined to the current user's directory, 8 GiB cap, destination canonicalization,
+  parent-directory handle check (rejects `%AppDir%\users\*`), protected-file checks
+  (`users.txt*`, `.sstmp_*`/`.ssdl_*`, exe), existing-target reparse/hardlink checks,
+  random `.ssdl_*` temp in the destination directory, copy + flush + size check, atomic
+  `MoveFileExA`, and cleanup so a failed retrieve leaves the old destination intact.
+  Tests cover round-trip, cross-user rejection, `users.txt`/user-dir/trailing-dot
+  destination rejection, and the required `.\dummyData` destination. 9/9 tests pass.

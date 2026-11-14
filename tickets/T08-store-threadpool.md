@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | feature |
 | **Depends on** | T03, T07 |
@@ -245,4 +245,13 @@ choice; keep CRT use in workers to zero anyway (only Win32 + heap).
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented the fixed 4-worker engine (`FileTransfer.c`): atomic 64-bit
+  chunk index, one reusable 64 KiB buffer and one manual-reset event per worker,
+  positional `OVERLAPPED` I/O, first-error propagation, join, 64-bit offsets, 8 GiB cap.
+  Overlapped completion required a per-worker event: without it, a write could complete
+  “successfully” with a zero byte count under concurrency. Implemented store: source open
+  and directory/hardlink checks, handle-based source confinement (own dir allowed, other
+  users/`users.txt`/temp/exe denied), 8 GiB cap, user-dir reparse verification, random
+  temp file, copy + flush + size check, atomic `MoveFileExA`, cleanup on every path.
+  `StoreRetrieveRoundTripAndIsolation` and the existing `FileTransfer` test pass; 9/9
+  tests green.

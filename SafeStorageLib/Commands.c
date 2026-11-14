@@ -1,5 +1,7 @@
 ﻿#include "Commands.h"
 #include "CredentialStore.h"
+#include "Crypto.h"
+#include "FileTransfer.h"
 #include "Internal.h"
 #include "Session.h"
 #include "Validation.h"
@@ -332,12 +334,15 @@ SafeStorageDeinit(
 /* ------------------------------------------------------------------------- */
 
 static NTSTATUS
-SsVerifyUserDir(
-    _In_z_ const char* UserDir
+SsOpenUserDir(
+    _In_z_ const char* UserDir,
+    _Out_ HANDLE* DirHandle
 )
 {
     HANDLE dirHandle;
     NTSTATUS status;
+
+    *DirHandle = INVALID_HANDLE_VALUE;
 
     dirHandle = CreateFileA(
         UserDir,
@@ -359,8 +364,63 @@ SsVerifyUserDir(
         status = SsVerifyDirHandlePath(dirHandle, UserDir);
     }
 
-    CloseHandle(dirHandle);
+    if (!NT_SUCCESS(status))
+    {
+        CloseHandle(dirHandle);
+        return status;
+    }
+
+    *DirHandle = dirHandle;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+SsVerifyUserDir(
+    _In_z_ const char* UserDir
+)
+{
+    HANDLE dirHandle;
+    NTSTATUS status;
+
+    status = SsOpenUserDir(UserDir, &dirHandle);
+    if (NT_SUCCESS(status))
+    {
+        CloseHandle(dirHandle);
+    }
     return status;
+}
+
+static NTSTATUS
+SsBuildTempPath(
+    _In_z_ const char* Directory,
+    _In_z_ const char* Prefix,
+    _Out_writes_(PathCap) char* Path,
+    _In_ size_t PathCap
+)
+{
+    BYTE randomBytes[SS_SALT_BYTES];
+    char randomHex[(SS_SALT_BYTES * 2) + 1];
+    NTSTATUS status;
+
+    status = SsGenerateSalt(randomBytes);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsHexEncode(randomBytes, sizeof(randomBytes),
+                         randomHex, sizeof(randomHex));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    if (FAILED(StringCchPrintfA(Path, PathCap, "%s\\%s%s",
+                                Directory, Prefix, randomHex)))
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -578,6 +638,10 @@ SafeStorageHandleLogout(
 }
 
 
+/* ------------------------------------------------------------------------- */
+/* store <source_file_path> <submission_name>                                 */
+/* ------------------------------------------------------------------------- */
+
 NTSTATUS WINAPI
 SafeStorageHandleStore(
     const char* SubmissionName,
@@ -586,13 +650,264 @@ SafeStorageHandleStore(
     uint16_t SourceFilePathLength
 )
 {
-    UNREFERENCED_PARAMETER(SubmissionName);
-    UNREFERENCED_PARAMETER(SubmissionNameLength);
-    UNREFERENCED_PARAMETER(SourceFilePath);
-    UNREFERENCED_PARAMETER(SourceFilePathLength);
-    return STATUS_NOT_IMPLEMENTED;
+    char submission[SS_SUBMISSION_NAME_MAX + 1];
+    char username[SS_USERNAME_MAX + 1];
+    char sourcePath[MAX_PATH];
+    char userDir[MAX_PATH];
+    char finalPath[MAX_PATH];
+    char tempPath[MAX_PATH];
+    char sourceFinal[MAX_PATH];
+    HANDLE source = INVALID_HANDLE_VALUE;
+    HANDLE temp = INVALID_HANDLE_VALUE;
+    HANDLE userDirHandle = INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    LARGE_INTEGER size;
+    ULONGLONG fileSize;
+    BOOL tempCreated = FALSE;
+    NTSTATUS status;
+    int attempt;
+
+    tempPath[0] = '\0';
+
+    if (!g_ss.Initialized)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (SubmissionName == NULL || SourceFilePath == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = SsCopyBounded(submission, sizeof(submission),
+                           SubmissionName, SubmissionNameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsValidateSubmissionName(submission, SubmissionNameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsSessionCopyUsername(username, sizeof(username));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsBuildUserDir(userDir, sizeof(userDir), username);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsCanonicalizeUserPath(SourceFilePath, SourceFilePathLength,
+                                    sourcePath, sizeof(sourcePath));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    source = CreateFileA(
+        sourcePath,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OVERLAPPED,
+        NULL);
+    if (source == INVALID_HANDLE_VALUE)
+    {
+        return SsNtStatusFromWin32(GetLastError());
+    }
+
+    if (!GetFileInformationByHandle(source, &info))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+    {
+        status = STATUS_FILE_IS_A_DIRECTORY;
+        goto cleanup;
+    }
+    /* SECURITY: a hardlink can alias another user's file or users.txt without
+     * revealing it in the path; submissions are app-created copies. */
+    if (info.nNumberOfLinks > 1)
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+
+    status = SsGetFinalPath(source, sourceFinal, sizeof(sourceFinal));
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+    if (SsIsProtectedAppFile(sourceFinal))
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+    if (SsIsPathInside(sourceFinal, g_ss.UsersDir) &&
+        !SsIsPathInside(sourceFinal, userDir))
+    {
+        /* SECURITY: A may read its own files or external files, never B's
+         * submission or the credential database. */
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+
+    if (!GetFileSizeEx(source, &size))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+    if (size.QuadPart < 0 ||
+        (ULONGLONG)size.QuadPart > SS_MAX_FILE_SIZE)
+    {
+        status = STATUS_FILE_TOO_LARGE;
+        goto cleanup;
+    }
+    fileSize = (ULONGLONG)size.QuadPart;
+
+    status = SsBuildSubmissionPath(finalPath, sizeof(finalPath),
+                                   username, submission);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    {
+        DWORD attributes = GetFileAttributesA(finalPath);
+
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+             (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0))
+        {
+            status = STATUS_ACCESS_DENIED;
+            goto cleanup;
+        }
+    }
+
+    status = SsOpenUserDir(userDir, &userDirHandle);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    for (attempt = 0; attempt < 8; attempt++)
+    {
+        status = SsBuildTempPath(userDir, SS_TEMP_STORE_PREFIX,
+                                 tempPath, sizeof(tempPath));
+        if (!NT_SUCCESS(status))
+        {
+            goto cleanup;
+        }
+
+        temp = CreateFileA(
+            tempPath,
+            GENERIC_WRITE,
+            0,
+            NULL,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT |
+                FILE_FLAG_OVERLAPPED,
+            NULL);
+
+        if (temp != INVALID_HANDLE_VALUE)
+        {
+            tempCreated = TRUE;
+            break;
+        }
+        if (GetLastError() != ERROR_FILE_EXISTS)
+        {
+            status = SsNtStatusFromWin32(GetLastError());
+            goto cleanup;
+        }
+    }
+
+    if (temp == INVALID_HANDLE_VALUE)
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+
+    status = SsVerifyFileHandlePath(temp, userDir);
+    if (NT_SUCCESS(status))
+    {
+        status = SsRejectReparsePoint(temp);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    status = SsCopyFileChunked(source, temp, fileSize,
+                               SS_CHUNK_SIZE, SS_TRANSFER_THREADS);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    if (!FlushFileBuffers(temp))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+
+    {
+        LARGE_INTEGER copiedSize;
+
+        if (!GetFileSizeEx(temp, &copiedSize))
+        {
+            status = SsNtStatusFromWin32(GetLastError());
+            goto cleanup;
+        }
+        if (copiedSize.QuadPart != (LONGLONG)fileSize)
+        {
+            status = STATUS_UNEXPECTED_IO_ERROR;
+            goto cleanup;
+        }
+    }
+
+    CloseHandle(temp);
+    temp = INVALID_HANDLE_VALUE;
+    CloseHandle(source);
+    source = INVALID_HANDLE_VALUE;
+
+    if (!MoveFileExA(tempPath, finalPath,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+
+    tempCreated = FALSE;
+    status = STATUS_SUCCESS;
+
+cleanup:
+    if (temp != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(temp);
+    }
+    if (source != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(source);
+    }
+    if (userDirHandle != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(userDirHandle);
+    }
+    if (tempCreated)
+    {
+        (void)DeleteFileA(tempPath);
+    }
+    return status;
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* retrieve <submission_name> <destination_file_path>                         */
+/* ------------------------------------------------------------------------- */
 
 NTSTATUS WINAPI
 SafeStorageHandleRetrieve(
@@ -602,9 +917,342 @@ SafeStorageHandleRetrieve(
     uint16_t DestinationFilePathLength
 )
 {
-    UNREFERENCED_PARAMETER(SubmissionName);
-    UNREFERENCED_PARAMETER(SubmissionNameLength);
-    UNREFERENCED_PARAMETER(DestinationFilePath);
-    UNREFERENCED_PARAMETER(DestinationFilePathLength);
-    return STATUS_NOT_IMPLEMENTED;
+    char submission[SS_SUBMISSION_NAME_MAX + 1];
+    char username[SS_USERNAME_MAX + 1];
+    char sourcePath[MAX_PATH];
+    char userDir[MAX_PATH];
+    char destinationPath[MAX_PATH];
+    char parentDir[MAX_PATH];
+    char parentFinal[MAX_PATH];
+    char tempPath[MAX_PATH];
+    HANDLE source = INVALID_HANDLE_VALUE;
+    HANDLE parentHandle = INVALID_HANDLE_VALUE;
+    HANDLE temp = INVALID_HANDLE_VALUE;
+    BY_HANDLE_FILE_INFORMATION info;
+    LARGE_INTEGER size;
+    ULONGLONG fileSize;
+    BOOL tempCreated = FALSE;
+    NTSTATUS status;
+    int attempt;
+
+    tempPath[0] = '\0';
+
+    if (!g_ss.Initialized)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (SubmissionName == NULL || DestinationFilePath == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = SsCopyBounded(submission, sizeof(submission),
+                           SubmissionName, SubmissionNameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsValidateSubmissionName(submission, SubmissionNameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsSessionCopyUsername(username, sizeof(username));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsBuildUserDir(userDir, sizeof(userDir), username);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsBuildSubmissionPath(sourcePath, sizeof(sourcePath),
+                                   username, submission);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    source = CreateFileA(
+        sourcePath,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN |
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    if (source == INVALID_HANDLE_VALUE)
+    {
+        return SsNtStatusFromWin32(GetLastError());
+    }
+
+    status = SsRejectReparsePoint(source);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+    if (!GetFileInformationByHandle(source, &info))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+    {
+        status = STATUS_FILE_IS_A_DIRECTORY;
+        goto cleanup;
+    }
+    if (info.nNumberOfLinks > 1)
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+
+    status = SsVerifyFileHandlePath(source, userDir);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    if (!GetFileSizeEx(source, &size))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+    if (size.QuadPart < 0 ||
+        (ULONGLONG)size.QuadPart > SS_MAX_FILE_SIZE)
+    {
+        status = STATUS_FILE_TOO_LARGE;
+        goto cleanup;
+    }
+    fileSize = (ULONGLONG)size.QuadPart;
+
+    status = SsCanonicalizeUserPath(DestinationFilePath, DestinationFilePathLength,
+                                    destinationPath, sizeof(destinationPath));
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    status = SsGetParentDir(destinationPath, parentDir, sizeof(parentDir));
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    parentHandle = CreateFileA(
+        parentDir,
+        FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    if (parentHandle == INVALID_HANDLE_VALUE)
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+
+    status = SsRejectReparsePoint(parentHandle);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+    status = SsGetFinalPath(parentHandle, parentFinal, sizeof(parentFinal));
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    /* SECURITY: never write into the credential DB or any user's storage. */
+    if (SsIsPathInside(parentFinal, g_ss.UsersDir) ||
+        SsIsProtectedAppFile(destinationPath) ||
+        SsIsPathInside(destinationPath, g_ss.UsersDir))
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+
+    {
+        DWORD attributes = GetFileAttributesA(destinationPath);
+
+        if (attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            DWORD error = GetLastError();
+
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+            {
+                status = SsNtStatusFromWin32(error);
+                goto cleanup;
+            }
+        }
+        else
+        {
+            HANDLE existing;
+            char existingFinal[MAX_PATH];
+            BY_HANDLE_FILE_INFORMATION destInfo;
+
+            if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+                (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            {
+                status = STATUS_ACCESS_DENIED;
+                goto cleanup;
+            }
+
+            existing = CreateFileA(
+                destinationPath,
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                NULL,
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                NULL);
+            if (existing == INVALID_HANDLE_VALUE)
+            {
+                status = SsNtStatusFromWin32(GetLastError());
+                goto cleanup;
+            }
+
+            status = SsRejectReparsePoint(existing);
+            if (NT_SUCCESS(status))
+            {
+                status = SsGetFinalPath(existing, existingFinal,
+                                        sizeof(existingFinal));
+            }
+            if (NT_SUCCESS(status))
+            {
+                if (SsIsProtectedAppFile(existingFinal) ||
+                    SsIsPathInside(existingFinal, g_ss.UsersDir))
+                {
+                    status = STATUS_ACCESS_DENIED;
+                }
+                else if (!GetFileInformationByHandle(existing, &destInfo))
+                {
+                    status = SsNtStatusFromWin32(GetLastError());
+                }
+                else if (destInfo.nNumberOfLinks > 1)
+                {
+                    /* Hardlink to another file cannot be told apart by path. */
+                    status = STATUS_ACCESS_DENIED;
+                }
+            }
+
+            CloseHandle(existing);
+            if (!NT_SUCCESS(status))
+            {
+                goto cleanup;
+            }
+        }
+    }
+
+    for (attempt = 0; attempt < 8; attempt++)
+    {
+        status = SsBuildTempPath(parentDir, SS_TEMP_RETRIEVE_PREFIX,
+                                 tempPath, sizeof(tempPath));
+        if (!NT_SUCCESS(status))
+        {
+            goto cleanup;
+        }
+
+        temp = CreateFileA(
+            tempPath,
+            GENERIC_WRITE | DELETE,
+            0,
+            NULL,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT |
+                FILE_FLAG_OVERLAPPED,
+            NULL);
+
+        if (temp != INVALID_HANDLE_VALUE)
+        {
+            tempCreated = TRUE;
+            break;
+        }
+        if (GetLastError() != ERROR_FILE_EXISTS)
+        {
+            status = SsNtStatusFromWin32(GetLastError());
+            goto cleanup;
+        }
+    }
+
+    if (temp == INVALID_HANDLE_VALUE)
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto cleanup;
+    }
+
+    status = SsVerifyFileHandlePath(temp, parentFinal);
+    if (NT_SUCCESS(status))
+    {
+        status = SsRejectReparsePoint(temp);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    status = SsCopyFileChunked(source, temp, fileSize,
+                               SS_CHUNK_SIZE, SS_TRANSFER_THREADS);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    if (!FlushFileBuffers(temp))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+
+    {
+        LARGE_INTEGER copiedSize;
+
+        if (!GetFileSizeEx(temp, &copiedSize))
+        {
+            status = SsNtStatusFromWin32(GetLastError());
+            goto cleanup;
+        }
+        if (copiedSize.QuadPart != (LONGLONG)fileSize)
+        {
+            status = STATUS_UNEXPECTED_IO_ERROR;
+            goto cleanup;
+        }
+    }
+
+    CloseHandle(temp);
+    temp = INVALID_HANDLE_VALUE;
+    CloseHandle(source);
+    source = INVALID_HANDLE_VALUE;
+
+    if (!MoveFileExA(tempPath, destinationPath,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        status = SsNtStatusFromWin32(GetLastError());
+        goto cleanup;
+    }
+
+    tempCreated = FALSE;
+    status = STATUS_SUCCESS;
+
+cleanup:
+    if (temp != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(temp);
+    }
+    if (source != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(source);
+    }
+    if (parentHandle != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(parentHandle);
+    }
+    if (tempCreated)
+    {
+        (void)DeleteFileA(tempPath);
+    }
+    return status;
 }

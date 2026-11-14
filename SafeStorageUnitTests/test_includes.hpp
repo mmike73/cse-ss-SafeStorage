@@ -21,6 +21,8 @@ using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 #include <string>
 #include <thread>
 #include <chrono>
+#include <vector>
+#include <iterator>
 
 
 #endif  // _TEST_INCLUDES_HPP_
