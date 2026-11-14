@@ -121,6 +121,73 @@ TEST_CLASS(UserActivityTest)
         Assert::IsTrue(std::filesystem::is_regular_file(".\\users.txt"));
     };
 
+    TEST_METHOD(CredentialStoreHashesAndVerifies)
+    {
+        const char usernameA[] = "CredA";
+        const char usernameB[] = "CredB";
+        const char password[] = "PassWord1@";
+        BOOL exists = FALSE;
+        BOOL match = FALSE;
+        NTSTATUS status;
+
+        status = SsUserAdd(usernameA, password,
+                           static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        status = SsUserAdd(usernameB, password,
+                           static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SsUserExists(usernameA, &exists);
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(exists);
+
+        status = SsUserVerify(usernameA, password,
+                              static_cast<uint16_t>(strlen(password)), &match);
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(match);
+
+        status = SsUserVerify(usernameA, "WrongPass1@",
+                              static_cast<uint16_t>(strlen("WrongPass1@")), &match);
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsFalse(match);
+
+        // Unknown user follows the same success/`Match=false` contract.
+        status = SsUserVerify("Zzzzz", password,
+                              static_cast<uint16_t>(strlen(password)), &match);
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsFalse(match);
+
+        // Case-insensitive duplicate must be rejected.
+        status = SsUserAdd("creda", password,
+                           static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        std::ifstream usersFile(".\\users.txt");
+        std::string line;
+        std::string lineA;
+        std::string lineB;
+        size_t countA = 0;
+
+        while (std::getline(usersFile, line))
+        {
+            if (line.rfind("CredA:", 0) == 0)
+            {
+                lineA = line;
+                countA++;
+            }
+            else if (line.rfind("CredB:", 0) == 0)
+            {
+                lineB = line;
+            }
+            Assert::IsTrue(line.find(password) == std::string::npos);
+        }
+
+        Assert::IsTrue(countA == 1);
+        Assert::IsFalse(lineA.empty());
+        Assert::IsFalse(lineB.empty());
+        Assert::IsTrue(lineA != lineB); // different salts -> different hashes
+    };
+
     TEST_METHOD(ValidationRejectsMaliciousInput)
     {
         char out[MAX_PATH];

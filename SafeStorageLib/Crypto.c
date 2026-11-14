@@ -2,9 +2,16 @@
 #include "Internal.h"
 
 /*
- * SafeStorageLib - crypto implementation.
+ * SafeStorageLib - password hashing primitives.
  *
- * T01 scaffold: PBKDF2 and hex helpers land in T04.
+ * PBKDF2-HMAC-SHA256 is used instead of the assignment's suggested MD5 or a
+ * bare SHA-256:
+ *   - MD5 is collision-broken and both are fast hashes, so a stolen users.txt
+ *     can be cracked at high rates on a GPU;
+ *   - PBKDF2 adds a per-user random salt (no rainbow tables) and a tunable
+ *     work factor (210k iterations, stored per record for future upgrades).
+ * Argon2/scrypt are not available in CNG, so PBKDF2 is the practical Windows
+ * choice and uses the Bcrypt.lib already linked by includes.h.
  */
 
 NTSTATUS
@@ -12,8 +19,14 @@ SsGenerateSalt(
     _Out_writes_(SS_SALT_BYTES) BYTE* Salt
 )
 {
-    UNREFERENCED_PARAMETER(Salt);
-    return STATUS_NOT_IMPLEMENTED;
+    if (Salt == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* SECURITY: only the OS CSPRNG; never rand()/srand(). */
+    return BCryptGenRandom(NULL, Salt, SS_SALT_BYTES,
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG);
 }
 
 NTSTATUS
@@ -26,13 +39,26 @@ SsDerivePasswordHash(
     _Out_writes_(SS_HASH_BYTES) BYTE* Hash
 )
 {
-    UNREFERENCED_PARAMETER(Password);
-    UNREFERENCED_PARAMETER(PasswordLen);
-    UNREFERENCED_PARAMETER(Salt);
-    UNREFERENCED_PARAMETER(SaltLen);
-    UNREFERENCED_PARAMETER(Iterations);
-    UNREFERENCED_PARAMETER(Hash);
-    return STATUS_NOT_IMPLEMENTED;
+    if (Password == NULL || Salt == NULL || Hash == NULL ||
+        PasswordLen == 0 || SaltLen == 0 ||
+        SaltLen > (size_t)MAXDWORD ||
+        Iterations < SS_PBKDF2_MIN_ITERATIONS ||
+        Iterations > SS_PBKDF2_MAX_ITERATIONS ||
+        g_ss.Pbkdf2Alg == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return BCryptDeriveKeyPBKDF2(
+        g_ss.Pbkdf2Alg,
+        (PUCHAR)Password,
+        (ULONG)PasswordLen,
+        (PUCHAR)Salt,
+        (ULONG)SaltLen,
+        Iterations,
+        Hash,
+        SS_HASH_BYTES,
+        0);
 }
 
 BOOL
@@ -42,10 +68,41 @@ SsConstantTimeEquals(
     _In_ size_t Len
 )
 {
-    UNREFERENCED_PARAMETER(A);
-    UNREFERENCED_PARAMETER(B);
-    UNREFERENCED_PARAMETER(Len);
-    return FALSE;
+    volatile BYTE diff = 0;
+    size_t i;
+
+    if (A == NULL || B == NULL)
+    {
+        return FALSE;
+    }
+
+    /* SECURITY: no early exit; prevents a timing oracle on the hash. */
+    for (i = 0; i < Len; i++)
+    {
+        diff = (BYTE)(diff | (A[i] ^ B[i]));
+    }
+
+    return diff == 0;
+}
+
+static int
+SsHexNibble(
+    _In_ char C
+)
+{
+    if (C >= '0' && C <= '9')
+    {
+        return C - '0';
+    }
+    if (C >= 'a' && C <= 'f')
+    {
+        return C - 'a' + 10;
+    }
+    if (C >= 'A' && C <= 'F')
+    {
+        return C - 'A' + 10;
+    }
+    return -1;
 }
 
 NTSTATUS
@@ -56,11 +113,28 @@ SsHexEncode(
     _In_ size_t OutCap
 )
 {
-    UNREFERENCED_PARAMETER(In);
-    UNREFERENCED_PARAMETER(InLen);
-    UNREFERENCED_PARAMETER(Out);
-    UNREFERENCED_PARAMETER(OutCap);
-    return STATUS_NOT_IMPLEMENTED;
+    static const char hex[] = "0123456789abcdef";
+    size_t i;
+
+    if (In == NULL || Out == NULL || OutCap == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    Out[0] = '\0';
+
+    if (InLen > ((SIZE_MAX - 1) / 2) || OutCap < (InLen * 2) + 1)
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    for (i = 0; i < InLen; i++)
+    {
+        Out[i * 2] = hex[(In[i] >> 4) & 0x0F];
+        Out[(i * 2) + 1] = hex[In[i] & 0x0F];
+    }
+    Out[InLen * 2] = '\0';
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
@@ -71,9 +145,29 @@ SsHexDecode(
     _In_ size_t OutCap
 )
 {
-    UNREFERENCED_PARAMETER(In);
-    UNREFERENCED_PARAMETER(InLen);
-    UNREFERENCED_PARAMETER(Out);
-    UNREFERENCED_PARAMETER(OutCap);
-    return STATUS_NOT_IMPLEMENTED;
+    size_t i;
+
+    if (In == NULL || Out == NULL || (InLen % 2) != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (OutCap < InLen / 2)
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    for (i = 0; i < InLen / 2; i++)
+    {
+        int hi = SsHexNibble(In[i * 2]);
+        int lo = SsHexNibble(In[(i * 2) + 1]);
+
+        if (hi < 0 || lo < 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        Out[i] = (BYTE)((hi << 4) | lo);
+    }
+
+    return STATUS_SUCCESS;
 }

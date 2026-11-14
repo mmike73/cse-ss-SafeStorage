@@ -6,6 +6,8 @@ extern "C"
 {
     #include "includes.h"
     #include "Commands.h"
+    #include "CredentialStore.h"
+    #include "Crypto.h"
     #include "Validation.h"
 };
 

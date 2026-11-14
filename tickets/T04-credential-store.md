@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | security |
 | **Depends on** | T02, T03 |
@@ -196,4 +196,11 @@ NTSTATUS SsUserVerify(const char *Username, const char *Password,
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented `Crypto.c` (BCryptGenRandom salt, PBKDF2-HMAC-SHA256,
+  constant-time compare, strict hex) and `CredentialStore.c` (bounded file read, strict
+  `username:iterations:salt:hash` parser, duplicate detection, fail-closed corruption
+  handling, locked read-modify-write, random temp file + `FlushFileBuffers` +
+  `MoveFileExA`, reparse re-check, dummy PBKDF2 for unknown users). Added
+  `CredentialStoreHashesAndVerifies`: two users with the same password get different
+  salts/hashes, plaintext is absent from `users.txt`, duplicate is case-insensitively
+  rejected, correct/wrong/unknown verification behave as specified. Passes.
