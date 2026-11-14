@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | security |
 | **Depends on** | T04, T07 |
@@ -134,4 +134,11 @@ typedef struct _SS_RATE_LIMITER {
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented login: bounded copies, shape validation before state access,
+  logged-in check, limiter check before verification, `SsUserVerify`, generic
+  `STATUS_LOGON_FAILURE` for bad/unknown credentials, failure recording, success resets
+  the limiter and sets the session, and a corrupt/missing user directory returns
+  `STATUS_FILE_CORRUPT_ERROR` without opening a session. `LoginAndBruteForce` passes:
+  second login fails, five failures lock the window, the correct password is rejected
+  while locked, it succeeds after 1.1 s, and unknown/wrong return the same status. Full
+  suite is 7/8; only `FileTransfer` remains (T08/T09).

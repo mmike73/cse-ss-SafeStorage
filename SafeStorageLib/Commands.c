@@ -457,6 +457,10 @@ SafeStorageHandleRegister(
 }
 
 
+/* ------------------------------------------------------------------------- */
+/* login <username> <password>                                                */
+/* ------------------------------------------------------------------------- */
+
 NTSTATUS WINAPI
 SafeStorageHandleLogin(
     const char* Username,
@@ -465,11 +469,98 @@ SafeStorageHandleLogin(
     uint16_t PasswordLength
 )
 {
-    UNREFERENCED_PARAMETER(Username);
-    UNREFERENCED_PARAMETER(UsernameLength);
-    UNREFERENCED_PARAMETER(Password);
-    UNREFERENCED_PARAMETER(PasswordLength);
-    return STATUS_NOT_IMPLEMENTED;
+    char username[SS_USERNAME_MAX + 1];
+    char password[SS_PASSWORD_MAX + 1];
+    char userDir[MAX_PATH];
+    BOOL lockHeld = FALSE;
+    BOOL match = FALSE;
+    NTSTATUS status;
+
+    if (!g_ss.Initialized)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (Username == NULL || Password == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = SsCopyBounded(username, sizeof(username), Username, UsernameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsValidateUsername(username, UsernameLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsCopyBounded(password, sizeof(password), Password, PasswordLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = SsValidatePassword(password, PasswordLength);
+    if (!NT_SUCCESS(status))
+    {
+        SecureZeroMemory(password, sizeof(password));
+        return status;
+    }
+
+    EnterCriticalSection(&g_ss.StateLock);
+    lockHeld = TRUE;
+
+    if (g_ss.Session.LoggedIn)
+    {
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        goto cleanup;
+    }
+
+    /* SECURITY: check the limiter before verifying, so a correct password is
+     * rejected too while the global window is saturated. */
+    if (SsRateLimiterCheckLocked())
+    {
+        status = STATUS_ACCOUNT_LOCKED_OUT;
+        goto cleanup;
+    }
+
+    status = SsUserVerify(username, password, PasswordLength, &match);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+
+    if (!match)
+    {
+        SsRateLimiterRecordFailureLocked();
+        status = STATUS_LOGON_FAILURE;
+        goto cleanup;
+    }
+
+    status = SsBuildUserDir(userDir, sizeof(userDir), username);
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto cleanup;
+    }
+    status = SsVerifyUserDir(userDir);
+    if (!NT_SUCCESS(status))
+    {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto cleanup;
+    }
+
+    SsRateLimiterResetLocked();
+    SsSessionSetLocked(username);
+    status = STATUS_SUCCESS;
+
+cleanup:
+    SecureZeroMemory(password, sizeof(password));
+    if (lockHeld)
+    {
+        LeaveCriticalSection(&g_ss.StateLock);
+    }
+    return status;
 }
 
 

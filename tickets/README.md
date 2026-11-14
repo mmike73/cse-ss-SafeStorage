@@ -23,7 +23,7 @@ Priority: `P0` = required for the assignment to pass, `P1` = required for full p
 | [T03](T03-input-validation-and-paths.md) | Input validation and Windows path-safety helpers | security | P0 | T01 | Done |
 | [T04](T04-credential-store.md) | Credential store: PBKDF2 hashing, atomic `users.txt` | security | P0 | T02, T03 | Done |
 | [T05](T05-register.md) | `register` command | feature | P0 | T04 | Done |
-| [T06](T06-login-and-bruteforce.md) | `login` command and brute-force throttling | security | P0 | T04, T07 | Todo |
+| [T06](T06-login-and-bruteforce.md) | `login` command and brute-force throttling | security | P0 | T04, T07 | Done |
 | [T07](T07-session-and-logout.md) | Session state and `logout` command | feature | P0 | T02 | Done |
 | [T08](T08-store-threadpool.md) | `store` command with 4-thread chunked upload | feature | P0 | T03, T07 | Todo |
 | [T09](T09-retrieve-threadpool.md) | `retrieve` command with 4-thread chunked download | feature | P0 | T08 | Todo |

@@ -127,6 +127,10 @@ TEST_CLASS(UserActivityTest)
         const char password[] = "PassWord1@";
         NTSTATUS status;
 
+        // Keep the test independent of execution order (earlier failures may
+        // leave a session behind while store/retrieve are still stubs).
+        (void)SafeStorageHandleLogout();
+
         status = SafeStorageHandleRegister(
             username, static_cast<uint16_t>(strlen(username)),
             password, static_cast<uint16_t>(strlen(password)));
@@ -240,12 +244,83 @@ TEST_CLASS(UserActivityTest)
         Assert::IsTrue(lineA != lineB); // different salts -> different hashes
     };
 
+    TEST_METHOD(LoginAndBruteForce)
+    {
+        const char username[] = "LogAa";
+        const char password[] = "PassWord1@";
+        const char wrong[] = "WrongPass1@";
+        NTSTATUS status;
+        NTSTATUS unknownStatus;
+        NTSTATUS wrongStatus;
+
+        (void)SafeStorageHandleLogout();
+
+        status = SafeStorageHandleRegister(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SafeStorageHandleLogin(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        // A second login while logged in must fail and keep the session.
+        status = SafeStorageHandleLogin(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+        Assert::IsTrue(SsSessionIsLoggedIn());
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+
+        // Five failures saturate the global window; the sixth (correct) is
+        // rejected too, as required by the assignment.
+        for (int i = 0; i < static_cast<int>(SS_MAX_LOGIN_FAILURES); i++)
+        {
+            status = SafeStorageHandleLogin(
+                username, static_cast<uint16_t>(strlen(username)),
+                wrong, static_cast<uint16_t>(strlen(wrong)));
+            Assert::IsFalse(NT_SUCCESS(status));
+        }
+
+        status = SafeStorageHandleLogin(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsFalse(NT_SUCCESS(status));
+        Assert::IsFalse(SsSessionIsLoggedIn());
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(SS_LOGIN_WINDOW_MS + 100));
+
+        status = SafeStorageHandleLogin(
+            username, static_cast<uint16_t>(strlen(username)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+
+        // Unknown user and wrong password are indistinguishable to the caller.
+        unknownStatus = SafeStorageHandleLogin(
+            "Zzzzz", static_cast<uint16_t>(strlen("Zzzzz")),
+            password, static_cast<uint16_t>(strlen(password)));
+        wrongStatus = SafeStorageHandleLogin(
+            username, static_cast<uint16_t>(strlen(username)),
+            wrong, static_cast<uint16_t>(strlen(wrong)));
+        Assert::IsTrue(unknownStatus == wrongStatus);
+        Assert::IsFalse(NT_SUCCESS(unknownStatus));
+
+        // Leave the global limiter clean for the rest of the suite.
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(SS_LOGIN_WINDOW_MS + 100));
+    };
+
     TEST_METHOD(SessionAndRateLimiter)
     {
         char username[SS_USERNAME_MAX + 1];
         NTSTATUS status;
 
-        // Logged out by default after the module's Init.
+        (void)SafeStorageHandleLogout();
+
+        // Logged out after the defensive logout above.
         Assert::IsFalse(SsSessionIsLoggedIn());
         Assert::IsFalse(NT_SUCCESS(SsSessionLogout()));
         Assert::IsFalse(NT_SUCCESS(SsSessionCopyUsername(username, sizeof(username))));
