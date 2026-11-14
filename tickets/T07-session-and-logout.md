@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | feature |
 | **Depends on** | T02 |
@@ -109,4 +109,8 @@ Rules:
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Implemented `Session.c`: lock-protected logged-in state, bounded
+  username copy, logout that wipes the session, locked set/clear helpers for login, and
+  the global 5-failures/second sliding-window limiter (ring buffer, prune on check).
+  `SessionAndRateLimiter` verifies the state machine and that the window expires after
+  1.1 s. Passes.

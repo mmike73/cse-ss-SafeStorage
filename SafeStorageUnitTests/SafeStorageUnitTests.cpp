@@ -188,6 +188,49 @@ TEST_CLASS(UserActivityTest)
         Assert::IsTrue(lineA != lineB); // different salts -> different hashes
     };
 
+    TEST_METHOD(SessionAndRateLimiter)
+    {
+        char username[SS_USERNAME_MAX + 1];
+        NTSTATUS status;
+
+        // Logged out by default after the module's Init.
+        Assert::IsFalse(SsSessionIsLoggedIn());
+        Assert::IsFalse(NT_SUCCESS(SsSessionLogout()));
+        Assert::IsFalse(NT_SUCCESS(SsSessionCopyUsername(username, sizeof(username))));
+
+        EnterCriticalSection(&g_ss.StateLock);
+        SsSessionSetLocked("UserA");
+        LeaveCriticalSection(&g_ss.StateLock);
+
+        Assert::IsTrue(SsSessionIsLoggedIn());
+        status = SsSessionCopyUsername(username, sizeof(username));
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(std::string(username) == "UserA");
+
+        status = SsSessionLogout();
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsFalse(SsSessionIsLoggedIn());
+        Assert::IsFalse(NT_SUCCESS(SsSessionLogout()));
+
+        // Global limiter: five failures block, and the window expires.
+        EnterCriticalSection(&g_ss.StateLock);
+        SsRateLimiterResetLocked();
+        for (int i = 0; i < static_cast<int>(SS_MAX_LOGIN_FAILURES); i++)
+        {
+            Assert::IsFalse(SsRateLimiterCheckLocked());
+            SsRateLimiterRecordFailureLocked();
+        }
+        Assert::IsTrue(SsRateLimiterCheckLocked());
+        LeaveCriticalSection(&g_ss.StateLock);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(SS_LOGIN_WINDOW_MS + 100));
+
+        EnterCriticalSection(&g_ss.StateLock);
+        Assert::IsFalse(SsRateLimiterCheckLocked());
+        SsRateLimiterResetLocked();
+        LeaveCriticalSection(&g_ss.StateLock);
+    };
+
     TEST_METHOD(ValidationRejectsMaliciousInput)
     {
         char out[MAX_PATH];

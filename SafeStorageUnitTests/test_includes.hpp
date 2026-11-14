@@ -8,6 +8,8 @@ extern "C"
     #include "Commands.h"
     #include "CredentialStore.h"
     #include "Crypto.h"
+    #include "Internal.h"
+    #include "Session.h"
     #include "Validation.h"
 };
 
@@ -17,6 +19,8 @@ using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <chrono>
 
 
 #endif  // _TEST_INCLUDES_HPP_
