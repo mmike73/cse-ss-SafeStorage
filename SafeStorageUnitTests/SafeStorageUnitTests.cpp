@@ -367,6 +367,194 @@ TEST_CLASS(UserActivityTest)
         std::filesystem::remove(destFile);
     };
 
+    TEST_METHOD(TransferEdgeCases)
+    {
+        const char user[] = "EdgeA";
+        const char password[] = "PassWord1@";
+        const char submission[] = "Empty";
+        const char source[] = ".\\edge_src.bin";
+        const char dest[] = ".\\edge_dst.bin";
+        NTSTATUS status;
+
+        (void)SafeStorageHandleLogout();
+        EnterCriticalSection(&g_ss.StateLock);
+        SsRateLimiterResetLocked();
+        LeaveCriticalSection(&g_ss.StateLock);
+
+        status = SafeStorageHandleRegister(
+            user, static_cast<uint16_t>(strlen(user)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        // store/retrieve are unavailable while logged out.
+        status = SafeStorageHandleStore(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            source, static_cast<uint16_t>(strlen(source)));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        status = SafeStorageHandleLogin(
+            user, static_cast<uint16_t>(strlen(user)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        // 0-byte file.
+        {
+            std::ofstream empty(source, std::ios::binary);
+        }
+        status = SafeStorageHandleStore(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            source, static_cast<uint16_t>(strlen(source)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            dest, static_cast<uint16_t>(strlen(dest)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(std::filesystem::file_size(dest) == 0);
+
+        // 1-byte file overwrites the submission.
+        {
+            std::ofstream one(source, std::ios::binary);
+            one.put('Z');
+        }
+        status = SafeStorageHandleStore(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            source, static_cast<uint16_t>(strlen(source)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        // Overwrite an existing destination.
+        {
+            std::ofstream old(dest, std::ios::binary);
+            old << "old-content-that-must-disappear";
+        }
+        status = SafeStorageHandleRetrieve(
+            submission, static_cast<uint16_t>(strlen(submission)),
+            dest, static_cast<uint16_t>(strlen(dest)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        Assert::IsTrue(std::filesystem::file_size(dest) == 1);
+        {
+            std::ifstream in(dest, std::ios::binary);
+            char c = 0;
+            in.get(c);
+            Assert::IsTrue(c == 'Z');
+        }
+
+        // Missing source and missing submission fail without partial output.
+        status = SafeStorageHandleStore(
+            "Missing", 7,
+            ".\\does_not_exist.bin",
+            static_cast<uint16_t>(strlen(".\\does_not_exist.bin")));
+        Assert::IsFalse(NT_SUCCESS(status));
+        std::filesystem::remove(".\\edge_missing.bin");
+        status = SafeStorageHandleRetrieve(
+            "NoSuchFile", 10,
+            ".\\edge_missing.bin",
+            static_cast<uint16_t>(strlen(".\\edge_missing.bin")));
+        Assert::IsFalse(NT_SUCCESS(status));
+        Assert::IsFalse(std::filesystem::exists(".\\edge_missing.bin"));
+
+        // Traversal submission name is rejected.
+        status = SafeStorageHandleStore(
+            "..\\escape", 9, source, static_cast<uint16_t>(strlen(source)));
+        Assert::IsFalse(NT_SUCCESS(status));
+
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+
+        // No transfer temp files may leak into the user directory or cwd.
+        for (const auto& entry : std::filesystem::directory_iterator(".\\users\\EdgeA"))
+        {
+            const std::string name = entry.path().filename().string();
+            Assert::IsFalse(name.rfind(".sstmp_", 0) == 0);
+        }
+        for (const auto& entry : std::filesystem::directory_iterator("."))
+        {
+            const std::string name = entry.path().filename().string();
+            Assert::IsFalse(name.rfind(".ssdl_", 0) == 0);
+        }
+
+        std::filesystem::remove(source);
+        std::filesystem::remove(dest);
+    };
+
+    TEST_METHOD(RejectsOverEightGiB)
+    {
+        const char* runLarge = std::getenv("SS_RUN_LARGE_TESTS");
+        if (runLarge == nullptr)
+        {
+            Logger::WriteMessage("RejectsOverEightGiB skipped: set SS_RUN_LARGE_TESTS=1");
+            return;
+        }
+
+        const char user[] = "HugeA";
+        const char password[] = "PassWord1@";
+        const char source[] = ".\\huge_sparse.bin";
+        NTSTATUS status;
+        HANDLE file;
+        DWORD returned = 0;
+        LARGE_INTEGER size;
+
+        (void)SafeStorageHandleLogout();
+        std::filesystem::remove(source);
+
+        file = CreateFileA(source, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+        Assert::IsTrue(file != INVALID_HANDLE_VALUE);
+        (void)DeviceIoControl(file, FSCTL_SET_SPARSE, NULL, 0,
+                              NULL, 0, &returned, NULL);
+        size.QuadPart = static_cast<LONGLONG>(SS_MAX_FILE_SIZE + 1);
+        Assert::IsTrue(SetFilePointerEx(file, size, NULL, FILE_BEGIN) != 0);
+        Assert::IsTrue(SetEndOfFile(file) != 0);
+        CloseHandle(file);
+
+        status = SafeStorageHandleRegister(
+            user, static_cast<uint16_t>(strlen(user)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+        status = SafeStorageHandleLogin(
+            user, static_cast<uint16_t>(strlen(user)),
+            password, static_cast<uint16_t>(strlen(password)));
+        Assert::IsTrue(NT_SUCCESS(status));
+
+        status = SafeStorageHandleStore(
+            "Huge", 4, source, static_cast<uint16_t>(strlen(source)));
+        Assert::IsFalse(NT_SUCCESS(status));
+        Assert::IsFalse(std::filesystem::exists(".\\users\\HugeA\\Huge"));
+
+        Assert::IsTrue(NT_SUCCESS(SafeStorageHandleLogout()));
+        std::filesystem::remove(source);
+    };
+
+    TEST_METHOD(FuzzValidationAndPaths)
+    {
+        std::mt19937 rng(0xC0FFEEu);
+        char path[MAX_PATH];
+
+        for (int i = 0; i < 4000; i++)
+        {
+            const size_t len = rng() % 300;
+            std::string data(len, '\0');
+            for (size_t j = 0; j < len; j++)
+            {
+                data[j] = static_cast<char>(rng() % 256);
+            }
+
+            (void)SsValidateUsername(data.data(),
+                                     static_cast<uint16_t>(len));
+            (void)SsValidatePassword(data.data(),
+                                     static_cast<uint16_t>(len));
+            (void)SsValidateSubmissionName(data.data(),
+                                            static_cast<uint16_t>(len));
+            (void)SsCanonicalizeUserPath(data.data(),
+                                         static_cast<uint16_t>(len),
+                                         path, sizeof(path));
+        }
+
+        // NULL / zero-length API inputs must fail, never crash.
+        Assert::IsFalse(NT_SUCCESS(SafeStorageHandleRegister(nullptr, 0, nullptr, 0)));
+        Assert::IsFalse(NT_SUCCESS(SafeStorageHandleLogin(nullptr, 0, nullptr, 0)));
+        Assert::IsFalse(NT_SUCCESS(SafeStorageHandleStore(nullptr, 0, nullptr, 0)));
+        Assert::IsFalse(NT_SUCCESS(SafeStorageHandleRetrieve(nullptr, 0, nullptr, 0)));
+    };
+
     TEST_METHOD(LoginAndBruteForce)
     {
         const char username[] = "LogAa";
@@ -377,6 +565,9 @@ TEST_CLASS(UserActivityTest)
         NTSTATUS wrongStatus;
 
         (void)SafeStorageHandleLogout();
+        EnterCriticalSection(&g_ss.StateLock);
+        SsRateLimiterResetLocked();
+        LeaveCriticalSection(&g_ss.StateLock);
 
         status = SafeStorageHandleRegister(
             username, static_cast<uint16_t>(strlen(username)),
@@ -528,6 +719,21 @@ TEST_CLASS(UserActivityTest)
         Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
             badTrailingDot, static_cast<uint16_t>(strlen(badTrailingDot)),
             out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            "\\\\server\\share\\x",
+            static_cast<uint16_t>(strlen("\\\\server\\share\\x")),
+            out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            "\\\\.\\C:\\x", 8, out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            ".\\CON", 5, out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            ".\\x.", 4, out, MAX_PATH)));
+        Assert::IsFalse(NT_SUCCESS(SsCanonicalizeUserPath(
+            ".\\x ", 4, out, MAX_PATH)));
+        Assert::IsTrue(SsIsTempFileName(".sstmp_abc"));
+        Assert::IsTrue(SsIsTempFileName("C:\\tmp\\.ssdl_abc"));
+        Assert::IsFalse(SsIsTempFileName("C:\\tmp\\normal.txt"));
 
         // Component-boundary containment.
         Assert::IsTrue(SsIsPathInside(

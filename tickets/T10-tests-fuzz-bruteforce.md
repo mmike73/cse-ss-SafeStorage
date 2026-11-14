@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | test |
 | **Depends on** | T05, T06, T07, T08, T09 |
@@ -202,4 +202,10 @@ for (int i = 0; i < 2000; ++i) {
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Expanded the MSTest suite to 12 tests: original two tests, init
+  resources, validation/path matrix, credential hashing/duplicates, register semantics,
+  login/brute force, session/limiter, 1 MiB store/retrieve + cross-user/path confinement,
+  transfer edge cases (0/1 byte, overwrite, missing files, traversal, temp cleanup),
+  4000-case deterministic fuzz + NULL/0 API calls, and an opt-in sparse >8 GiB rejection
+  test. All 12 pass on Win32 Debug with W4+WX. Tests reset the session/limiter where order
+  could otherwise contaminate them. `SS_RUN_LARGE_TESTS=1` enables the 8 GiB test.

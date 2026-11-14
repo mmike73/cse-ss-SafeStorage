@@ -16,6 +16,8 @@ extern "C"
 #include "CppUnitTest.h"
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 
+#include <winioctl.h>
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -23,6 +25,7 @@ using namespace Microsoft::VisualStudio::CppUnitTestFramework;
 #include <chrono>
 #include <vector>
 #include <iterator>
+#include <random>
 
 
 #endif  // _TEST_INCLUDES_HPP_
