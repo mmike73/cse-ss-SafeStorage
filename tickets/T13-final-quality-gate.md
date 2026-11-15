@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Todo |
+| **Status** | Done |
 | **Priority** | P0 |
 | **Type** | QA |
 | **Depends on** | T01–T12 |
@@ -164,4 +164,17 @@ introduce new features; only fix what the gate finds and update the docs.
 
 ## Work log
 
-- _pending_
+- _2026-11-15_ — Final gate on Windows (VS 18 / MSVC 14.52, Win32 Debug):
+  - full Rebuild with W4 + Treat Warnings As Errors: clean;
+  - `/p:RunCodeAnalysis=true`: clean after three documented false-positive
+    suppressions (C6386 x2, C6001);
+  - 12/12 MSTest tests pass; opt-in `SS_RUN_LARGE_TESTS=1` sparse >8 GiB test passes;
+  - manual restart persistence: register/login/store, exit, relaunch,
+    login/retrieve -> byte-identical; `users.txt` contains only salt+hash;
+  - manual parser fuzz: 10 KB token rejected/drained, immediate EOF exits cleanly,
+    no password in output;
+  - source scan: no `strcpy/strcat/sprintf/gets/scanf` in the library, no hardcoded
+    paths, no TODO/FIXME, no temp artifacts;
+  - packaged `MoldovanMihai.zip` (39 entries: solution, three projects, README,
+    vulnerabilities.txt, tickets; excludes .git/out/.user/PDFs/temp/build helpers).
+  - Residual items are documented in README section 9; no known critical issue remains.
